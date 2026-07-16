@@ -60,7 +60,9 @@ WORKDIR /app
 COPY --from=backend-builder --chmod=0755 /out/grok2api /app/grok2api
 COPY --from=frontend-builder /src/frontend/dist /app/frontend/dist
 COPY VERSION /app/VERSION
-COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/grok2api-entrypoint
+COPY docker/entrypoint.sh /usr/local/bin/grok2api-entrypoint
+RUN sed -i 's/\r$//' /usr/local/bin/grok2api-entrypoint && \
+    chmod 0755 /usr/local/bin/grok2api-entrypoint
 
 EXPOSE 8000
 

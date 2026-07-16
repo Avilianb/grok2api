@@ -136,6 +136,77 @@ func TestPublicModelNameResolvesAcrossAvailableProviders(t *testing.T) {
 	}
 }
 
+func TestReplaceProviderRoutesPreservesManualDuplicateUpstreamRoute(t *testing.T) {
+	ctx := context.Background()
+	repo := NewModelRepository(openTestDatabase(t))
+	manual, err := repo.Create(ctx, model.Route{
+		PublicID: "Build/claude-sonnet-4-5", Provider: account.ProviderBuild, UpstreamModel: "grok-4.5",
+		Capability: model.CapabilityResponses, Enabled: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.ReplaceProviderRoutes(ctx, account.ProviderBuild, []model.Route{{
+		PublicID: "Build/gpt-5.6-sol", Provider: account.ProviderBuild, UpstreamModel: "grok-4.5",
+		Capability: model.CapabilityResponses, Enabled: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	manualAfter, err := repo.GetByPublicIDIncludingDisabled(ctx, "Build/claude-sonnet-4-5")
+	if err != nil || manualAfter.ID != manual.ID || manualAfter.Origin != model.OriginManual {
+		t.Fatalf("manual duplicate route = %#v, err = %v", manualAfter, err)
+	}
+	catalog, err := repo.GetByPublicIDIncludingDisabled(ctx, "Build/gpt-5.6-sol")
+	if err != nil || catalog.ID == manual.ID || catalog.Origin != model.OriginCatalog {
+		t.Fatalf("catalog route = %#v, err = %v", catalog, err)
+	}
+}
+
+func TestUpsertRoutesAddsDistinctPublicRouteForSharedUpstreamModel(t *testing.T) {
+	ctx := context.Background()
+	repo := NewModelRepository(openTestDatabase(t))
+	if _, err := repo.Create(ctx, model.Route{
+		PublicID: "Build/gpt-5.6-sol", Provider: account.ProviderBuild, UpstreamModel: "grok-4.5",
+		Capability: model.CapabilityResponses, Enabled: true,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.UpsertRoutes(ctx, []model.Route{{
+		PublicID: "Build/claude-sonnet-4-5", Provider: account.ProviderBuild, UpstreamModel: "grok-4.5",
+		Capability: model.CapabilityResponses, Enabled: true,
+	}}); err != nil {
+		t.Fatalf("upsert distinct public route sharing upstream model: %v", err)
+	}
+
+	route, err := repo.GetByPublicIDIncludingDisabled(ctx, "Build/claude-sonnet-4-5")
+	if err != nil || route.UpstreamModel != "grok-4.5" {
+		t.Fatalf("shared-upstream route = %#v, err = %v", route, err)
+	}
+}
+
+func TestUpsertDiscoveredAddsDefaultRouteBesideManualSharedUpstreamRoute(t *testing.T) {
+	ctx := context.Background()
+	repo := NewModelRepository(openTestDatabase(t))
+	if _, err := repo.Create(ctx, model.Route{
+		PublicID: "Build/claude-sonnet-4-5", Provider: account.ProviderBuild, UpstreamModel: "grok-4.5",
+		Capability: model.CapabilityResponses, Enabled: true,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-4.5"}); err != nil {
+		t.Fatalf("discover default route sharing manual upstream model: %v", err)
+	}
+
+	route, err := repo.GetByPublicIDIncludingDisabled(ctx, "Build/grok-4.5")
+	if err != nil || route.UpstreamModel != "grok-4.5" || route.Origin != model.OriginDiscovered {
+		t.Fatalf("discovered shared-upstream route = %#v, err = %v", route, err)
+	}
+}
+
 func TestReplaceProviderRoutesReconcilesStaticCatalog(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)

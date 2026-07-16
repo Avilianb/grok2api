@@ -181,14 +181,6 @@ func findModelRoutesByPublicID(db *gorm.DB, publicID string) ([]modelRouteModel,
 	return result, nil
 }
 
-func (r *ModelRepository) GetByProviderUpstream(ctx context.Context, provider account.Provider, upstreamModel string) (model.Route, error) {
-	var row modelRouteModel
-	if err := r.availableRoutes(r.db.db.WithContext(ctx)).Where("provider = ? AND upstream_model = ? AND enabled = ?", provider, upstreamModel, true).First(&row).Error; err != nil {
-		return model.Route{}, mapError(err)
-	}
-	return toModelDomain(row), nil
-}
-
 func (r *ModelRepository) ReplaceAccountCapabilities(ctx context.Context, accountID uint64, upstreamModels []string, syncedAt time.Time) error {
 	unique := make(map[string]struct{}, len(upstreamModels))
 	rows := make([]accountModelCapabilityModel, 0, len(upstreamModels))
@@ -261,26 +253,19 @@ func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account
 		if err := tx.Where("provider = ?", provider).Find(&existing).Error; err != nil {
 			return err
 		}
-		existingUpstream := make(map[string]bool, len(existing))
 		publicIDs := make(map[string]bool, len(existing))
 		for _, row := range existing {
-			if row.Provider == string(provider) {
-				existingUpstream[row.UpstreamModel] = true
-			}
 			publicIDs[row.PublicID] = true
 		}
 		rows := make([]modelRouteModel, 0, len(upstreamModels))
 		for _, upstreamModel := range upstreamModels {
-			if existingUpstream[upstreamModel] {
-				continue
-			}
 			localID, capability := discoveredRouteDefaults(provider, upstreamModel)
 			publicID, ok := model.NormalizePublicID(provider, localID)
 			if !ok {
 				return fmt.Errorf("Provider %s 发现了无效模型 ID %q", provider, localID)
 			}
 			if publicIDs[publicID] {
-				return fmt.Errorf("Provider %s 的模型公开 ID %q 冲突", provider, publicID)
+				continue
 			}
 			if err := ensureModelPublicIDNotAlias(tx, publicID, 0); err != nil {
 				return err
@@ -289,7 +274,7 @@ func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account
 			rows = append(rows, modelRouteModel{PublicID: publicID, Provider: string(provider), UpstreamModel: upstreamModel, Capability: string(capability), Origin: string(model.OriginDiscovered), Enabled: true})
 		}
 		if len(rows) > 0 {
-			// 多实例可能同时发现同一上游模型；唯一约束负责最终幂等，避免竞态变成整批失败。
+			// 多实例可能同时发现同一公开模型；公开 ID 的唯一约束负责最终幂等，避免竞态变成整批失败。
 			return tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(rows, 200).Error
 		}
 		return nil
@@ -325,7 +310,7 @@ func (r *ModelRepository) UpsertRoutes(ctx context.Context, values []model.Route
 				return fmt.Errorf("模型路由目录包含无效条目")
 			}
 			var existing modelRouteModel
-			err := tx.Where("provider = ? AND upstream_model = ?", value.Provider, value.UpstreamModel).First(&existing).Error
+			err := tx.Where("public_id = ?", value.PublicID).First(&existing).Error
 			if err == nil {
 				continue
 			}
@@ -368,20 +353,32 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 			return err
 		}
 
-		byUpstream := make(map[string]modelRouteModel, len(existing))
 		byPublicID := make(map[string]modelRouteModel, len(existing))
+		byUpstream := make(map[string][]modelRouteModel, len(existing))
 		for _, row := range existing {
-			byUpstream[row.UpstreamModel] = row
 			byPublicID[row.PublicID] = row
+			if row.Origin != string(model.OriginManual) {
+				byUpstream[row.UpstreamModel] = append(byUpstream[row.UpstreamModel], row)
+			}
 		}
 		matched := make(map[int]modelRouteModel, len(values))
 		usedIDs := make(map[uint64]bool, len(values))
 		for index, value := range values {
-			row, ok := byUpstream[value.UpstreamModel]
-			if !ok || usedIDs[row.ID] {
-				row, ok = byPublicID[value.PublicID]
+			row, ok := byPublicID[value.PublicID]
+			if ok && usedIDs[row.ID] {
+				ok = false
 			}
-			if ok && !usedIDs[row.ID] {
+			if !ok {
+				for _, candidate := range byUpstream[value.UpstreamModel] {
+					if usedIDs[candidate.ID] {
+						continue
+					}
+					row = candidate
+					ok = true
+					break
+				}
+			}
+			if ok {
 				matched[index] = row
 				usedIDs[row.ID] = true
 			}

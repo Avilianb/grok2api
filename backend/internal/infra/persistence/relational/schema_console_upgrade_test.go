@@ -62,7 +62,56 @@ func TestInitializeSchemaUpgradesProviderChecksForConsole(t *testing.T) {
 		}
 	}
 	assertSQLiteUniqueIndexes(t, database, "provider_accounts", "idx_provider_accounts_identity_key")
-	assertSQLiteUniqueIndexes(t, database, "model_routes", "idx_model_routes_public_id", "uidx_provider_upstream")
+	assertSQLiteUniqueIndexes(t, database, "model_routes", "idx_model_routes_public_id")
+}
+
+func TestInitializeSchemaDropsLegacyProviderUpstreamUniqueIndex(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	first := modelRouteModel{
+		PublicID: "Build/gpt-5.6-sol", Provider: string(account.ProviderBuild), UpstreamModel: "grok-4.5",
+		Capability: "responses", Origin: "manual", Enabled: true,
+	}
+	if err := database.db.WithContext(ctx).Create(&first).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Exec("CREATE UNIQUE INDEX uidx_provider_upstream ON model_routes(provider, upstream_model)").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	second := modelRouteModel{
+		PublicID: "Build/claude-sonnet-4-5", Provider: string(account.ProviderBuild), UpstreamModel: "grok-4.5",
+		Capability: "responses", Origin: "manual", Enabled: true,
+	}
+	if err := database.db.WithContext(ctx).Create(&second).Error; err != nil {
+		t.Fatalf("same upstream model must permit multiple public IDs: %v", err)
+	}
+
+	var indexes []struct {
+		Name   string
+		Unique int
+	}
+	if err := database.db.Raw("PRAGMA index_list('model_routes')").Scan(&indexes).Error; err != nil {
+		t.Fatal(err)
+	}
+	foundLookup := false
+	for _, index := range indexes {
+		if index.Name == "uidx_provider_upstream" {
+			t.Fatalf("legacy unique index remains: %#v", indexes)
+		}
+		if index.Name == "idx_model_routes_provider_upstream" {
+			foundLookup = true
+			if index.Unique != 0 {
+				t.Fatalf("provider/upstream lookup index must not be unique: %#v", index)
+			}
+		}
+	}
+	if !foundLookup {
+		t.Fatalf("provider/upstream lookup index missing: %#v", indexes)
+	}
 }
 
 func assertSQLiteUniqueIndexes(t *testing.T, database *Database, table string, expected ...string) {

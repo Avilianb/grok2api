@@ -88,7 +88,6 @@ type routeResolver interface {
 	Get(ctx context.Context, id uint64) (modeldomain.Route, error)
 	GetByPublicID(ctx context.Context, publicID string) (modeldomain.Route, error)
 	GetByPublicIDCandidates(ctx context.Context, publicID string) ([]modeldomain.Route, error)
-	GetByProviderUpstream(ctx context.Context, providerValue accountdomain.Provider, upstreamModel string) (modeldomain.Route, error)
 }
 
 type accountModelSyncer interface {
@@ -260,15 +259,20 @@ func (s *Service) resolvePublicModelRoutes(ctx context.Context, publicModel stri
 	if !ok {
 		return nil, "", err
 	}
-	if alias.Provider != "" && alias.UpstreamModel != "" {
-		route, routeErr := s.models.GetByProviderUpstream(ctx, alias.Provider, alias.UpstreamModel)
-		if routeErr != nil {
-			return nil, "", routeErr
-		}
-		return []modeldomain.Route{route}, alias.ReasoningEffort, nil
-	}
 	routes, err = s.models.GetByPublicIDCandidates(ctx, alias.PublicModel)
-	return routes, alias.ReasoningEffort, err
+	if err != nil || alias.Provider == "" || alias.UpstreamModel == "" {
+		return routes, alias.ReasoningEffort, err
+	}
+	filtered := make([]modeldomain.Route, 0, len(routes))
+	for _, route := range routes {
+		if route.Provider == alias.Provider && route.UpstreamModel == alias.UpstreamModel {
+			filtered = append(filtered, route)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil, alias.ReasoningEffort, repository.ErrNotFound
+	}
+	return filtered, alias.ReasoningEffort, nil
 }
 
 // selectConversationRoute 从同名模型的可用来源中选择满足权限、协议和会话归属的路由。

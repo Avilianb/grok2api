@@ -13,6 +13,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/application/gateway"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/gin-gonic/gin"
+	"github.com/klauspost/compress/zstd"
 )
 
 func TestVideoGenerationUsesOfficialXAIEndpointsAndFields(t *testing.T) {
@@ -429,5 +430,66 @@ func TestSelectionErrorResponseDistinguishesCoolingAndSaturation(t *testing.T) {
 				t.Fatalf("status=%d code=%q retry-after=%q", status, code, recorder.Header().Get("Retry-After"))
 			}
 		})
+	}
+}
+
+func TestResponsesRequestShapeDoesNotExposeRequestContent(t *testing.T) {
+	shape := responsesRequestShape([]byte(`{
+		"input":[{"role":"user","content":"do-not-log-this-prompt"}],
+		"prompt_cache_key":"do-not-log-this-cache-key",
+		"previous_response_id":"do-not-log-this-response-id",
+		"generate":false
+	}`))
+
+	if shape != "json=object model=missing input=array input_items=1 prompt_cache_key=true previous_response_id=true generate=bool" {
+		t.Fatalf("shape=%q", shape)
+	}
+	for _, secret := range []string{
+		"do-not-log-this-prompt",
+		"do-not-log-this-cache-key",
+		"do-not-log-this-response-id",
+		"false",
+	} {
+		if strings.Contains(shape, secret) {
+			t.Fatalf("shape leaked request content %q: %q", secret, shape)
+		}
+	}
+}
+
+func TestResponsesRequestDiagnosticClassifiesContentEncodingWithoutLeakingValues(t *testing.T) {
+	diagnostic := responsesRequestDiagnostic([]byte{0x1f, 0x8b, 0x08, 0x00}, "gzip")
+	if diagnostic != "content_encoding=gzip json=invalid" {
+		t.Fatalf("diagnostic=%q", diagnostic)
+	}
+	if strings.Contains(diagnostic, "\x1f") || strings.Contains(diagnostic, "0x8b") {
+		t.Fatalf("diagnostic leaked request bytes: %q", diagnostic)
+	}
+}
+func TestResponsesRequestShapeClassifiesInvalidJSON(t *testing.T) {
+	if shape := responsesRequestShape([]byte(`{"model":`)); shape != "json=invalid" {
+		t.Fatalf("shape=%q", shape)
+	}
+}
+
+func TestResponsesEndpointDecodesZstdRequestBody(t *testing.T) {
+	encoder, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer encoder.Close()
+
+	compressed := encoder.EncodeAll([]byte(`{"model":"grok-4.1","input":[]}`), nil)
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	NewHandler(nil, nil, 1<<20).Register(router.Group("/v1"))
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(compressed))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Content-Encoding", "zstd")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

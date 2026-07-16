@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/transport/http/middleware"
 	"github.com/gin-gonic/gin"
+	"github.com/klauspost/compress/zstd"
 )
 
 type Handler struct {
@@ -38,7 +40,11 @@ const (
 	responseWriteTimeout           = 30 * time.Second
 )
 
-var errResponseTransferLimit = errors.New("响应超过代理安全上限")
+var (
+	errResponseTransferLimit              = errors.New("响应超过代理安全上限")
+	errResponseRequestBodyLimit           = errors.New("请求体解压后超过限制")
+	errUnsupportedResponseContentEncoding = errors.New("不支持的请求体编码")
+)
 
 const mediaTransferErrorTrailer = "X-Grok2API-Transfer-Error"
 
@@ -630,13 +636,18 @@ func (h *Handler) handleCreate(c *gin.Context, compact bool) {
 		writeOpenAIError(c, http.StatusUnsupportedMediaType, "invalid_request", "Responses only supports application/json")
 		return
 	}
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := readResponsesRequestBody(c.Request.Body, c.GetHeader("Content-Encoding"), h.maxBodyBytes)
 	if err != nil {
+		if errors.Is(err, errUnsupportedResponseContentEncoding) {
+			writeOpenAIError(c, http.StatusUnsupportedMediaType, "invalid_request", "Responses 请求体编码不受支持")
+			return
+		}
 		writeOpenAIError(c, http.StatusRequestEntityTooLarge, "request_too_large", "请求体超过限制")
 		return
 	}
 	var request responsesRequest
 	if err := json.Unmarshal(body, &request); err != nil || strings.TrimSpace(request.Model) == "" {
+		slog.Warn("responses request missing valid model", "diagnostic", responsesRequestDiagnostic(body, c.GetHeader("Content-Encoding")))
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "Responses 请求缺少有效 model")
 		return
 	}
@@ -672,6 +683,102 @@ func (h *Handler) handleCreate(c *gin.Context, compact bool) {
 		return
 	}
 	h.writeResult(c, result, request.Stream && !compact)
+}
+
+func readResponsesRequestBody(body io.Reader, contentEncoding string, maxBytes int64) ([]byte, error) {
+	switch responsesContentEncodingShape(contentEncoding) {
+	case "identity":
+		return io.ReadAll(body)
+	case "zstd":
+		decoder, err := zstd.NewReader(body, zstd.WithDecoderMaxMemory(uint64(maxBytes)))
+		if err != nil {
+			return nil, err
+		}
+		defer decoder.Close()
+		decoded, err := io.ReadAll(io.LimitReader(decoder, maxBytes+1))
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(decoded)) > maxBytes {
+			return nil, errResponseRequestBodyLimit
+		}
+		return decoded, nil
+	default:
+		return nil, errUnsupportedResponseContentEncoding
+	}
+}
+
+func responsesRequestDiagnostic(body []byte, contentEncoding string) string {
+	return "content_encoding=" + responsesContentEncodingShape(contentEncoding) + " " + responsesRequestShape(body)
+}
+
+func responsesContentEncodingShape(value string) string {
+	for _, encoding := range strings.Split(value, ",") {
+		switch strings.ToLower(strings.TrimSpace(encoding)) {
+		case "", "identity":
+			continue
+		case "gzip", "br", "deflate", "zstd":
+			return strings.ToLower(strings.TrimSpace(encoding))
+		default:
+			return "other"
+		}
+	}
+	return "identity"
+}
+func responsesRequestShape(body []byte) string {
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(body, &document); err != nil {
+		return "json=invalid"
+	}
+
+	parts := []string{"json=object", "model=" + jsonValueShape(document["model"])}
+	if input, ok := document["input"]; ok {
+		parts = append(parts, "input="+jsonValueShape(input))
+		if varray, ok := jsonArrayLength(input); ok {
+			parts = append(parts, fmt.Sprintf("input_items=%d", varray))
+		}
+	}
+	for _, name := range []string{"prompt_cache_key", "previous_response_id"} {
+		if _, ok := document[name]; ok {
+			parts = append(parts, name+"=true")
+		}
+	}
+	if value, ok := document["generate"]; ok {
+		parts = append(parts, "generate="+jsonValueShape(value))
+	}
+	return strings.Join(parts, " ")
+}
+
+func jsonArrayLength(value json.RawMessage) (int, bool) {
+	var array []json.RawMessage
+	if err := json.Unmarshal(value, &array); err != nil {
+		return 0, false
+	}
+	return len(array), true
+}
+
+func jsonValueShape(value json.RawMessage) string {
+	if len(value) == 0 {
+		return "missing"
+	}
+	var decoded any
+	if err := json.Unmarshal(value, &decoded); err != nil {
+		return "invalid"
+	}
+	switch decoded.(type) {
+	case nil:
+		return "null"
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	default:
+		return "number"
+	}
 }
 
 func isJSONRequest(c *gin.Context) bool {

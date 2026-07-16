@@ -193,7 +193,7 @@ func TestApplyPatchStreamBuffersFunctionProtocolAndRestoresItems(t *testing.T) {
 	}
 }
 
-func TestAdditionalToolsAndCompactionBoundaryRemainVisible(t *testing.T) {
+func TestAdditionalToolsAndNativeCompactionTriggerRemainVisible(t *testing.T) {
 	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","tools":[{"type":"function","name":"lookup","description":"old","parameters":{"type":"object"}}],
 		"input":[
@@ -217,12 +217,11 @@ func TestAdditionalToolsAndCompactionBoundaryRemainVisible(t *testing.T) {
 		t.Fatalf("normalized tools = %#v", tools)
 	}
 	items := request["input"].([]any)
-	if len(items) != 3 || items[0].(map[string]any)["role"] != "developer" || items[1].(map[string]any)["role"] != "developer" {
+	if len(items) != 3 || items[0].(map[string]any)["type"] != "compaction_trigger" || items[1].(map[string]any)["role"] != "developer" {
 		t.Fatalf("boundary items = %#v", items)
 	}
-	first := items[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
 	second := items[1].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
-	if !strings.Contains(first, "compaction boundary") || !strings.Contains(second, "lookup, apply_patch") {
-		t.Fatalf("boundary text = %q / %q", first, second)
+	if !strings.Contains(second, "lookup, apply_patch") {
+		t.Fatalf("additional tools boundary text = %q", second)
 	}
 }

@@ -165,9 +165,11 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 			c.changed = true
 			rewritten = append(rewritten, converted)
 		case "compaction_trigger":
-			c.changed = true
-			c.addWarning("compaction_boundary_preserved")
-			rewritten = append(rewritten, compatibilityBoundaryMessage("Codex context compaction boundary reached."))
+			// Codex remote compaction v2 uses this native Responses item to ask the
+			// upstream model for a compaction blob. Rewriting it as visible text
+			// disables that capability and makes Codex wait for an output item that
+			// can never arrive, so preserve it verbatim.
+			rewritten = append(rewritten, cloneJSONValue(item))
 		case "additional_tools":
 			marker, additional, visible, err := c.normalizeAdditionalToolsInput(item, param)
 			if err != nil {

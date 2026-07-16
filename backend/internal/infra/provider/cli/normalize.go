@@ -37,6 +37,7 @@ func normalizeResponsesRequest(body []byte, model string) ([]byte, *responsesToo
 		payload["text"] = encoded
 		delete(payload, "response_format")
 	}
+	normalizeReasoningReplayContent(payload)
 	patchReasoningTextTypes(payload)
 	compatibility, err := normalizeResponsesTools(payload)
 	if err != nil {
@@ -47,6 +48,40 @@ func normalizeResponsesRequest(body []byte, model string) ([]byte, *responsesToo
 		return nil, nil, err
 	}
 	return normalized, compatibility, nil
+}
+
+// normalizeReasoningReplayContent keeps Codex's opaque reasoning replay shape
+// acceptable to Grok Build. Codex serializes an absent reasoning.content field
+// as null, but Grok treats content:null next to encrypted_content as an
+// unmodified-state violation. An empty array is the equivalent Responses shape
+// and leaves the opaque encrypted_content bytes untouched.
+func normalizeReasoningReplayContent(payload map[string]json.RawMessage) {
+	raw := payload["input"]
+	if isEmptyJSON(raw) {
+		return
+	}
+	var items []any
+	if json.Unmarshal(raw, &items) != nil {
+		return
+	}
+	changed := false
+	for _, rawItem := range items {
+		item, ok := rawItem.(map[string]any)
+		if !ok || item["type"] != "reasoning" {
+			continue
+		}
+		encrypted, _ := item["encrypted_content"].(string)
+		if encrypted == "" {
+			continue
+		}
+		if content, exists := item["content"]; !exists || content == nil {
+			item["content"] = []any{}
+			changed = true
+		}
+	}
+	if changed {
+		payload["input"] = mustJSON(items)
+	}
 }
 
 // patchReasoningTextTypes 对齐官方 CLI 的序列化后修补：Responses 上游要求

@@ -123,10 +123,6 @@ func (s *Service) GetByPublicIDCandidates(ctx context.Context, publicID string) 
 	return s.models.GetByPublicIDCandidates(ctx, publicID)
 }
 
-func (s *Service) GetByProviderUpstream(ctx context.Context, providerValue account.Provider, upstreamModel string) (modeldomain.Route, error) {
-	return s.models.GetByProviderUpstream(ctx, providerValue, upstreamModel)
-}
-
 func (s *Service) Create(ctx context.Context, input CreateInput) (modeldomain.Route, error) {
 	publicID, validPublicID := modeldomain.NormalizePublicID(input.Provider, input.PublicID)
 	if !validPublicID {

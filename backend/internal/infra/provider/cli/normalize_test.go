@@ -65,6 +65,62 @@ func TestNormalizeResponsesRequestDoesNotInventPromptCacheKey(t *testing.T) {
 	}
 }
 
+func TestNormalizeResponsesRequestNormalizesNullReasoningContentWithEncryptedContent(t *testing.T) {
+	normalized, _, err := normalizeResponsesRequest([]byte(`{
+		"model":"public",
+		"input":[
+			{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"kept"}],"content":null,"encrypted_content":"opaque-ciphertext"},
+			{"role":"user","content":"continue"}
+		]
+	}`), "grok-4.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(normalized, &payload); err != nil {
+		t.Fatal(err)
+	}
+	reasoning := payload["input"].([]any)[0].(map[string]any)
+	content, ok := reasoning["content"].([]any)
+	if !ok || len(content) != 0 {
+		t.Fatalf("reasoning.content = %#v, want []", reasoning["content"])
+	}
+	if reasoning["encrypted_content"] != "opaque-ciphertext" {
+		t.Fatalf("encrypted_content changed: %#v", reasoning)
+	}
+}
+
+func TestNormalizeResponsesRequestPreservesOpaqueCompactionContent(t *testing.T) {
+	for _, compactionType := range []string{"compaction", "compaction_summary", "context_compaction"} {
+		t.Run(compactionType, func(t *testing.T) {
+			const opaque = "opaque+/=with-escaped-\\\"-content"
+			body, err := json.Marshal(map[string]any{
+				"model": "public",
+				"input": []any{
+					map[string]any{"type": compactionType, "id": "cmp_1", "encrypted_content": opaque},
+					map[string]any{"role": "user", "content": "continue"},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			normalized, _, err := normalizeResponsesRequest(body, "grok-4.5")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(normalized, &payload); err != nil {
+				t.Fatal(err)
+			}
+			input := payload["input"].([]any)
+			compaction := input[0].(map[string]any)
+			if compaction["type"] != compactionType || compaction["encrypted_content"] != opaque {
+				t.Fatalf("opaque compaction changed: %#v", compaction)
+			}
+		})
+	}
+}
+
 func TestNormalizeResponsesRequestFlattensJSONSchema(t *testing.T) {
 	body := []byte(`{"model":"public","input":"hello","response_format":{"type":"json_schema","json_schema":{"type":"object","name":"answer","strict":true,"schema":{"type":"object"}}}}`)
 	normalized, _, err := normalizeResponsesRequest(body, "grok-4.5")

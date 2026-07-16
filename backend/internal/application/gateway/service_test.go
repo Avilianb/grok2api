@@ -75,10 +75,6 @@ func (r *etagSyncResolver) GetByPublicIDCandidates(context.Context, string) ([]m
 	return nil, repository.ErrNotFound
 }
 
-func (r *etagSyncResolver) GetByProviderUpstream(context.Context, account.Provider, string) (modeldomain.Route, error) {
-	return modeldomain.Route{}, repository.ErrNotFound
-}
-
 func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "gateway.db"))
@@ -173,6 +169,57 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatalf("continued attempts = %#v", adapter.attempts)
 	}
 
+	adapter.resetAttempts()
+	adapter.firstID = 0
+	recoveredFirst, err := accountRepo.Get(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector.MarkSuccess(ctx, recoveredFirst)
+	adapter.setFailure(second.ID, http.StatusTooManyRequests)
+	opaqueResult, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-compaction-pinned", ClientKey: clientKey, PublicModel: "grok-test",
+		Body:               []byte(`{"model":"grok-test","input":[{"type":"compaction","encrypted_content":"opaque+/=blob"},{"role":"user","content":"continue"}]}`),
+		PromptCacheSeed:    "claude-session",
+		PromptCacheKey:     "",
+		PreviousResponseID: "",
+	})
+	if err != nil {
+		t.Fatalf("opaque compaction request = %v", err)
+	}
+	_, _ = io.ReadAll(opaqueResult.Body)
+	opaqueResult.Finalize(Usage{}, "resp-opaque", "")
+	_ = opaqueResult.Body.Close()
+	if len(adapter.attempts) != 2 || adapter.attempts[0] != second.ID || adapter.attempts[1] != first.ID {
+		t.Fatalf("opaque compaction attempts = %#v, want sticky account %d then fallback %d", adapter.attempts, second.ID, first.ID)
+	}
+	expectedOpaqueCacheKey := resolvePromptCacheIdentity(clientKey.ID, account.ProviderBuild, "grok-test", audit.OperationResponses, "", "claude-session")
+	if len(adapter.promptCacheKeys) != 2 || adapter.promptCacheKeys[0] != expectedOpaqueCacheKey || adapter.promptCacheKeys[1] != expectedOpaqueCacheKey {
+		t.Fatalf("opaque compaction cache keys = %#v, want the same stable key %q across fallback", adapter.promptCacheKeys, expectedOpaqueCacheKey)
+	}
+
+	adapter.resetAttempts()
+	unboundOpaque, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-compaction-unbound", ClientKey: clientKey, PublicModel: "grok-test",
+		Body:            []byte(`{"model":"grok-test","input":[{"type":"context_compaction","encrypted_content":"another-opaque-blob"}]}`),
+		PromptCacheSeed: "different-session",
+	})
+	if err != nil {
+		t.Fatalf("unbound opaque compaction request = %v", err)
+	}
+	_, _ = io.ReadAll(unboundOpaque.Body)
+	unboundOpaque.Finalize(Usage{}, "resp-opaque-unbound", "")
+	_ = unboundOpaque.Body.Close()
+	if len(adapter.attempts) != 1 || adapter.attempts[0] != first.ID {
+		t.Fatalf("unbound opaque compaction attempts = %#v, want eligible account %d", adapter.attempts, first.ID)
+	}
+
+	adapter.clearFailure(second.ID)
+	recoveredSecond, err := accountRepo.Get(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector.MarkSuccess(ctx, recoveredSecond)
 	adapter.resetAttempts()
 	resource, err := service.GetResponse(ctx, ResourceInput{ClientKey: clientKey, ResponseID: "resp-test", RawQuery: "include=reasoning.encrypted_content"})
 	if err != nil {
@@ -1016,10 +1063,12 @@ type failoverAdapter struct {
 	mu                 sync.Mutex
 	firstID            uint64
 	attempts           []uint64
+	promptCacheKeys    []string
 	lastMethod         string
 	lastPath           string
 	lastPromptCacheKey string
 	resourceStatus     int
+	failures           map[uint64]int
 }
 
 type statelessConsoleAdapter struct{}
@@ -1301,14 +1350,18 @@ func (a *failoverAdapter) Definition() provider.Definition {
 func (a *failoverAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
 	a.mu.Lock()
 	a.attempts = append(a.attempts, request.Credential.ID)
+	a.promptCacheKeys = append(a.promptCacheKeys, request.PromptCacheKey)
 	a.lastMethod = request.Method
 	a.lastPath = request.Path
 	a.lastPromptCacheKey = request.PromptCacheKey
 	resourceStatus := a.resourceStatus
+	failureStatus := a.failures[request.Credential.ID]
 	a.mu.Unlock()
 	status, body := http.StatusOK, "ok"
 	if request.Method != http.MethodPost && resourceStatus != 0 {
 		status, body = resourceStatus, "missing"
+	} else if failureStatus != 0 {
+		status, body = failureStatus, "forced failure"
 	} else if request.Credential.ID == a.firstID {
 		status, body = http.StatusTooManyRequests, "limited"
 	}
@@ -1325,9 +1378,25 @@ func (a *failoverAdapter) resetAttempts() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.attempts = nil
+	a.promptCacheKeys = nil
 	a.lastMethod = ""
 	a.lastPath = ""
 	a.lastPromptCacheKey = ""
+}
+
+func (a *failoverAdapter) setFailure(accountID uint64, status int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.failures == nil {
+		a.failures = make(map[uint64]int)
+	}
+	a.failures[accountID] = status
+}
+
+func (a *failoverAdapter) clearFailure(accountID uint64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.failures, accountID)
 }
 func (a *failoverAdapter) ListModels(context.Context, account.Credential) ([]string, error) {
 	return nil, nil
