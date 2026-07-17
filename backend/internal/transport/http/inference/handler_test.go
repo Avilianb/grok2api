@@ -315,6 +315,31 @@ func TestExtractUsageFromCompletedEvent(t *testing.T) {
 	}
 }
 
+func TestExtractUsageFromAnthropicMessageDelta(t *testing.T) {
+	metadata := extractMetadata([]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":168733,"output_tokens":2257,"cache_creation_input_tokens":0,"cache_read_input_tokens":161792,"reasoning_tokens":377,"cost_in_usd_ticks":350000000}}`))
+	usage := metadata.Usage
+	if usage.InputTokens != 168733 || usage.OutputTokens != 2257 || usage.TotalTokens != 170990 {
+		t.Fatalf("usage = %#v", usage)
+	}
+	if usage.CachedInputTokens != 161792 || usage.ReasoningTokens != 377 {
+		t.Fatalf("anthropic cache/reasoning = %#v", usage)
+	}
+	if usage.CostInUSDTicks != 350000000 {
+		t.Fatalf("cost = %#v", usage)
+	}
+}
+
+func TestExtractUsageFromChatCompletionUsage(t *testing.T) {
+	metadata := extractMetadata([]byte(`{"id":"chatcmpl_1","model":"grok-4.5","usage":{"prompt_tokens":181355,"completion_tokens":1199,"total_tokens":182554,"prompt_tokens_details":{"cached_tokens":161792},"completion_tokens_details":{"reasoning_tokens":377}}}`))
+	usage := metadata.Usage
+	if usage.InputTokens != 181355 || usage.OutputTokens != 1199 || usage.TotalTokens != 182554 {
+		t.Fatalf("usage = %#v", usage)
+	}
+	if usage.CachedInputTokens != 161792 {
+		t.Fatalf("chat cached = %#v", usage)
+	}
+}
+
 func TestUsageInspectorHandlesChunkedSSE(t *testing.T) {
 	inspector := &responseInspector{}
 	inspector.Inspect([]byte("data: {\"response\":{\"id\":\"resp_stream\",\"usage\":{\"input_tokens\":2,"))

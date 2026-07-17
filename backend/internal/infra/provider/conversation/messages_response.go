@@ -108,6 +108,8 @@ func anthropicUsage(value responseUsage, webSearchRequests int) map[string]any {
 	usage := map[string]any{
 		"input_tokens": value.InputTokens, "output_tokens": value.OutputTokens,
 		"cache_creation_input_tokens": 0, "cache_read_input_tokens": value.InputTokensDetails.CachedTokens,
+		// Preserve upstream reasoning for audit extraction; clients ignore unknown usage fields.
+		"reasoning_tokens":           value.OutputTokensDetails.ReasoningTokens,
 		"cost_in_usd_ticks":          value.CostInUSDTicks,
 		"num_sources_used":           value.NumSourcesUsed,
 		"num_server_side_tools_used": value.NumServerSideToolsUsed,
