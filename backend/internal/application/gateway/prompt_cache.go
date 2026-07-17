@@ -14,10 +14,15 @@ const promptCacheIdentityVersion = "v1"
 
 // resolvePromptCacheIdentity 将客户端缓存键或会话标识转换为固定长度的上游身份。
 // 客户端、Provider、上游模型和协议共同参与摘要，防止共享账号池中的跨租户碰撞。
+// 客户端未提供会话 seed 时回退到 client-key 稳定身份，避免每次请求随机
+// x-grok-session-id 导致账号不粘滞、上游 prompt cache 永远 miss。
 func resolvePromptCacheIdentity(clientKeyID uint64, provider accountdomain.Provider, upstreamModel string, operation audit.Operation, explicitKey, sessionSeed string) string {
 	seed := strings.TrimSpace(explicitKey)
 	if seed == "" {
 		seed = strings.TrimSpace(sessionSeed)
+	}
+	if seed == "" && clientKeyID != 0 {
+		seed = fmt.Sprintf("client-key:%d", clientKeyID)
 	}
 	model := strings.ToLower(strings.TrimSpace(upstreamModel))
 	if clientKeyID == 0 || provider == "" || model == "" || seed == "" {

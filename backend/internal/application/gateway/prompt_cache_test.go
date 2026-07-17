@@ -34,7 +34,20 @@ func TestResolvePromptCacheIdentityPrefersExplicitKey(t *testing.T) {
 	if resolvePromptCacheIdentity(0, accountdomain.ProviderBuild, "grok-4.5", audit.OperationResponses, "client-key", "") != "" {
 		t.Fatal("identity without client ownership should be empty")
 	}
-	if resolvePromptCacheIdentity(7, accountdomain.ProviderBuild, "grok-4.5", audit.OperationResponses, "", "") != "" {
-		t.Fatal("identity without an explicit key or session should be empty")
+}
+
+func TestResolvePromptCacheIdentityFallsBackToClientKey(t *testing.T) {
+	first := resolvePromptCacheIdentity(7, accountdomain.ProviderBuild, "grok-4.5", audit.OperationMessages, "", "")
+	second := resolvePromptCacheIdentity(7, accountdomain.ProviderBuild, "grok-4.5", audit.OperationMessages, "", "")
+	if first == "" || first != second {
+		t.Fatalf("client-key fallback unstable: first=%q second=%q", first, second)
+	}
+	otherClient := resolvePromptCacheIdentity(8, accountdomain.ProviderBuild, "grok-4.5", audit.OperationMessages, "", "")
+	if otherClient == first {
+		t.Fatalf("client-key fallback not isolated across clients: %q", first)
+	}
+	withSession := resolvePromptCacheIdentity(7, accountdomain.ProviderBuild, "grok-4.5", audit.OperationMessages, "", "session-1")
+	if withSession == first {
+		t.Fatal("session seed should differ from client-key fallback")
 	}
 }
