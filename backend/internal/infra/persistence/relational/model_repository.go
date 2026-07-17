@@ -267,6 +267,13 @@ func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account
 			if publicIDs[publicID] {
 				continue
 			}
+			if same, err := aliasOwnedBySameUpstream(tx, publicID, provider, upstreamModel); err != nil {
+				return err
+			} else if same {
+				// skip duplicate public id reserved as alias for same upstream
+				publicIDs[publicID] = true
+				continue
+			}
 			if err := ensureModelPublicIDNotAlias(tx, publicID, 0); err != nil {
 				return err
 			}

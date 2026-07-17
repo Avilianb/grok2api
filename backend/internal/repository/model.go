@@ -16,6 +16,9 @@ type ModelRepository interface {
 	Get(ctx context.Context, id uint64) (model.Route, error)
 	GetByPublicID(ctx context.Context, publicID string) (model.Route, error)
 	GetByPublicIDCandidates(ctx context.Context, publicID string) ([]model.Route, error)
+	GetByPublicIDIncludingDisabled(ctx context.Context, publicID string) (model.Route, error)
+	GetByProviderUpstream(ctx context.Context, provider account.Provider, upstreamModel string) (model.Route, error)
+	ListByProviderUpstream(ctx context.Context, provider account.Provider, upstreamModel string) ([]model.Route, error)
 	UpsertDiscovered(ctx context.Context, provider account.Provider, upstreamModels []string) error
 	UpsertRoutes(ctx context.Context, values []model.Route) error
 	ReplaceProviderRoutes(ctx context.Context, provider account.Provider, values []model.Route) error
@@ -28,4 +31,10 @@ type ModelRepository interface {
 	Delete(ctx context.Context, id uint64) error
 	DeleteMany(ctx context.Context, ids []uint64) (int64, error)
 	UpdateManyEnabled(ctx context.Context, ids []uint64, enabled bool) (int64, error)
+	ListMappings(ctx context.Context) ([]model.Mapping, error)
+	GetMapping(ctx context.Context, id uint64) (model.Mapping, error)
+	GetMappingByExternalID(ctx context.Context, externalID string) (model.Mapping, error)
+	CreateMapping(ctx context.Context, value model.Mapping) (model.Mapping, error)
+	UpdateMapping(ctx context.Context, value model.Mapping) (model.Mapping, error)
+	DeleteMapping(ctx context.Context, id uint64) error
 }

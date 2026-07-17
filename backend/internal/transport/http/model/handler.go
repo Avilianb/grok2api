@@ -28,6 +28,10 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.DELETE("/models", h.batchDelete)
 	router.PATCH("/models/:id", h.update)
 	router.DELETE("/models/:id", h.delete)
+	router.GET("/model-mappings", h.listMappings)
+	router.POST("/model-mappings", h.createMapping)
+	router.PATCH("/model-mappings/:id", h.updateMapping)
+	router.DELETE("/model-mappings/:id", h.deleteMapping)
 }
 
 type updateRequest struct {
@@ -52,6 +56,38 @@ type batchUpdateRequest struct {
 
 type batchDeleteRequest struct {
 	IDs []string `json:"ids" binding:"required"`
+}
+
+type mappingTargetRequest struct {
+	Provider      string `json:"provider" binding:"required"`
+	UpstreamModel string `json:"upstreamModel" binding:"required"`
+	Priority      int    `json:"priority"`
+	Enabled       bool   `json:"enabled"`
+}
+
+type mappingRequest struct {
+	ExternalID     string                 `json:"externalId" binding:"required"`
+	Enabled        bool                   `json:"enabled"`
+	EffortOverride string                 `json:"effortOverride"`
+	Targets        []mappingTargetRequest `json:"targets" binding:"required"`
+}
+
+type mappingTargetResponse struct {
+	ID            uint64 `json:"id,string"`
+	Provider      string `json:"provider"`
+	UpstreamModel string `json:"upstreamModel"`
+	Priority      int    `json:"priority"`
+	Enabled       bool   `json:"enabled"`
+}
+
+type mappingResponse struct {
+	ID             uint64                  `json:"id,string"`
+	ExternalID     string                  `json:"externalId"`
+	Enabled        bool                    `json:"enabled"`
+	EffortOverride string                  `json:"effortOverride"`
+	Targets        []mappingTargetResponse `json:"targets"`
+	CreatedAt      time.Time               `json:"createdAt"`
+	UpdatedAt      time.Time               `json:"updatedAt"`
 }
 
 type modelResponse struct {
@@ -222,6 +258,65 @@ func (h *Handler) delete(c *gin.Context) {
 	response.Success(c, http.StatusOK, gin.H{"deleted": true})
 }
 
+func (h *Handler) listMappings(c *gin.Context) {
+	values, err := h.service.ListMappings(c.Request.Context())
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "modelMappingListFailed", "读取模型映射失败")
+		return
+	}
+	items := make([]mappingResponse, 0, len(values))
+	for _, value := range values {
+		items = append(items, newMappingResponse(value))
+	}
+	response.Success(c, http.StatusOK, gin.H{"items": items})
+}
+
+func (h *Handler) createMapping(c *gin.Context) {
+	var request mappingRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	value, err := h.service.CreateMapping(c.Request.Context(), toMappingInput(request))
+	if err != nil {
+		h.writeServiceError(c, "modelMappingCreateFailed", err)
+		return
+	}
+	response.Success(c, http.StatusCreated, newMappingResponse(value))
+}
+
+func (h *Handler) updateMapping(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.Error(c, http.StatusBadRequest, "invalidId", "ID 无效")
+		return
+	}
+	var request mappingRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	value, err := h.service.UpdateMapping(c.Request.Context(), id, toMappingInput(request))
+	if err != nil {
+		h.writeServiceError(c, "modelMappingUpdateFailed", err)
+		return
+	}
+	response.Success(c, http.StatusOK, newMappingResponse(value))
+}
+
+func (h *Handler) deleteMapping(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.Error(c, http.StatusBadRequest, "invalidId", "ID 无效")
+		return
+	}
+	if err := h.service.DeleteMapping(c.Request.Context(), id); err != nil {
+		h.writeServiceError(c, "modelMappingDeleteFailed", err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"deleted": true})
+}
+
 // writeServiceError 仅暴露明确的模型业务错误，避免泄露持久化细节。
 func (h *Handler) writeServiceError(c *gin.Context, code string, err error) {
 	switch {
@@ -233,6 +328,31 @@ func (h *Handler) writeServiceError(c *gin.Context, code string, err error) {
 		response.Error(c, http.StatusConflict, "modelConflict", err.Error())
 	default:
 		response.Error(c, http.StatusInternalServerError, code, "模型操作失败")
+	}
+}
+
+func toMappingInput(request mappingRequest) modelapp.MappingInput {
+	targets := make([]modelapp.MappingTargetInput, 0, len(request.Targets))
+	for _, target := range request.Targets {
+		targets = append(targets, modelapp.MappingTargetInput{
+			Provider: account.Provider(target.Provider), UpstreamModel: target.UpstreamModel,
+			Priority: target.Priority, Enabled: target.Enabled,
+		})
+	}
+	return modelapp.MappingInput{ExternalID: request.ExternalID, Enabled: request.Enabled, EffortOverride: request.EffortOverride, Targets: targets}
+}
+
+func newMappingResponse(value modeldomain.Mapping) mappingResponse {
+	targets := make([]mappingTargetResponse, 0, len(value.Targets))
+	for _, target := range value.Targets {
+		targets = append(targets, mappingTargetResponse{
+			ID: target.ID, Provider: string(target.Provider), UpstreamModel: target.UpstreamModel,
+			Priority: target.Priority, Enabled: target.Enabled,
+		})
+	}
+	return mappingResponse{
+		ID: value.ID, ExternalID: value.ExternalID, Enabled: value.Enabled, EffortOverride: value.EffortOverride,
+		Targets: targets, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
 

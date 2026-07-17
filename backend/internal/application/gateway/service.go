@@ -90,6 +90,10 @@ type routeResolver interface {
 	GetByPublicIDCandidates(ctx context.Context, publicID string) ([]modeldomain.Route, error)
 }
 
+type mappingEffortResolver interface {
+	MappingEffortOverride(ctx context.Context, publicID string) string
+}
+
 type accountModelSyncer interface {
 	SyncAccount(ctx context.Context, accountID uint64) (int, error)
 }
@@ -250,7 +254,11 @@ func (s *Service) CompactResponse(ctx context.Context, input Input) (*Result, er
 func (s *Service) resolvePublicModelRoutes(ctx context.Context, publicModel string) ([]modeldomain.Route, string, error) {
 	routes, err := s.models.GetByPublicIDCandidates(ctx, publicModel)
 	if err == nil {
-		return routes, "", nil
+		effort := ""
+		if resolver, ok := s.models.(mappingEffortResolver); ok {
+			effort = resolver.MappingEffortOverride(ctx, publicModel)
+		}
+		return routes, effort, nil
 	}
 	if s.providers == nil {
 		return nil, "", err
@@ -392,6 +400,11 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	input.PublicModel = publicModel
 	if aliasEffort != "" {
 		input.Body, err = rewriteAliasedModel(input.Body, publicModel, aliasEffort, operation)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		input.Body, err = normalizeClientEffortFields(input.Body, operation)
 		if err != nil {
 			return nil, err
 		}
@@ -848,26 +861,78 @@ func rewriteAliasedModel(body []byte, publicModel, reasoningEffort string, opera
 	}
 	payload["model"] = publicModel
 	if reasoningEffort != "" {
-		switch operation {
-		case audit.OperationChat:
-			payload["reasoning_effort"] = reasoningEffort
-		case audit.OperationMessages:
-			config, _ := payload["output_config"].(map[string]any)
-			if config == nil {
-				config = make(map[string]any)
-			}
-			config["effort"] = reasoningEffort
-			payload["output_config"] = config
-		default:
-			reasoning, _ := payload["reasoning"].(map[string]any)
-			if reasoning == nil {
-				reasoning = make(map[string]any)
-			}
-			reasoning["effort"] = reasoningEffort
-			payload["reasoning"] = reasoning
-		}
+		applyEffortOverride(payload, modeldomain.NormalizeIncomingEffort(reasoningEffort), operation)
 	}
 	return json.Marshal(payload)
+}
+
+// normalizeClientEffortFields 把 Claude ultra 的 max/xhigh 等兼容值收口到 Grok 支持的 low/medium/high。
+func normalizeClientEffortFields(body []byte, operation audit.Operation) ([]byte, error) {
+	if len(body) == 0 {
+		return body, nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("解析请求 effort: %w", err)
+	}
+	changed := false
+	switch operation {
+	case audit.OperationChat:
+		if raw, ok := payload["reasoning_effort"].(string); ok && raw != "" {
+			if next := modeldomain.NormalizeIncomingEffort(raw); next != raw {
+				payload["reasoning_effort"] = next
+				changed = true
+			}
+		}
+	case audit.OperationMessages:
+		if config, ok := payload["output_config"].(map[string]any); ok {
+			if raw, ok := config["effort"].(string); ok && raw != "" {
+				if next := modeldomain.NormalizeIncomingEffort(raw); next != raw {
+					config["effort"] = next
+					payload["output_config"] = config
+					changed = true
+				}
+			}
+		}
+	default:
+		if reasoning, ok := payload["reasoning"].(map[string]any); ok {
+			if raw, ok := reasoning["effort"].(string); ok && raw != "" {
+				if next := modeldomain.NormalizeIncomingEffort(raw); next != raw {
+					reasoning["effort"] = next
+					payload["reasoning"] = reasoning
+					changed = true
+				}
+			}
+		}
+	}
+	if !changed {
+		return body, nil
+	}
+	return json.Marshal(payload)
+}
+
+func applyEffortOverride(payload map[string]any, effort string, operation audit.Operation) {
+	if effort == "" {
+		return
+	}
+	switch operation {
+	case audit.OperationChat:
+		payload["reasoning_effort"] = effort
+	case audit.OperationMessages:
+		config, _ := payload["output_config"].(map[string]any)
+		if config == nil {
+			config = make(map[string]any)
+		}
+		config["effort"] = effort
+		payload["output_config"] = config
+	default:
+		reasoning, _ := payload["reasoning"].(map[string]any)
+		if reasoning == nil {
+			reasoning = make(map[string]any)
+		}
+		reasoning["effort"] = effort
+		payload["reasoning"] = reasoning
+	}
 }
 
 type ResourceInput struct {

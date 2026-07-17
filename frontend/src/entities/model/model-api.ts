@@ -90,3 +90,83 @@ export function deleteModels(ids: string[]): Promise<{ deleted: number }> {
 export function updateModelsEnabled(ids: string[], enabled: boolean): Promise<{ updated: number }> {
   return apiRequest("/api/admin/v1/models/batch", { method: "PATCH", body: { ids, enabled } }, decodeCountResult<{ updated: number }>("updated"));
 }
+
+export type ModelMappingTargetDTO = {
+  id: string;
+  provider: ModelRouteDTO["provider"];
+  upstreamModel: string;
+  priority: number;
+  enabled: boolean;
+};
+
+export type ModelMappingDTO = {
+  id: string;
+  externalId: string;
+  enabled: boolean;
+  effortOverride: string;
+  targets: ModelMappingTargetDTO[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ModelMappingTargetInput = {
+  provider: ModelRouteDTO["provider"];
+  upstreamModel: string;
+  priority: number;
+  enabled: boolean;
+};
+
+export type ModelMappingInput = {
+  externalId: string;
+  enabled: boolean;
+  effortOverride: string;
+  targets: ModelMappingTargetInput[];
+};
+
+const mappingTargetValidator = hasShape({
+  id: isString,
+  provider: isOneOf("grok_build", "grok_web", "grok_console"),
+  upstreamModel: isString,
+  priority: isNumber,
+  enabled: isBoolean,
+});
+
+const mappingValidator = hasShape({
+  id: isString,
+  externalId: isString,
+  enabled: isBoolean,
+  effortOverride: isString,
+  targets: isArrayOf(mappingTargetValidator),
+  createdAt: isString,
+  updatedAt: isString,
+});
+
+const decodeModelMapping = createObjectDecoder<ModelMappingDTO>("model mapping", {
+  id: isString,
+  externalId: isString,
+  enabled: isBoolean,
+  effortOverride: isString,
+  targets: isArrayOf(mappingTargetValidator),
+  createdAt: isString,
+  updatedAt: isString,
+});
+
+const decodeModelMappings = createObjectDecoder<{ items: ModelMappingDTO[] }>("model mappings", {
+  items: isArrayOf(mappingValidator),
+});
+
+export function listModelMappings(): Promise<{ items: ModelMappingDTO[] }> {
+  return apiRequest("/api/admin/v1/model-mappings", {}, decodeModelMappings);
+}
+
+export function createModelMapping(input: ModelMappingInput): Promise<ModelMappingDTO> {
+  return apiRequest("/api/admin/v1/model-mappings", { method: "POST", body: input }, decodeModelMapping);
+}
+
+export function updateModelMapping(id: string, input: ModelMappingInput): Promise<ModelMappingDTO> {
+  return apiRequest(`/api/admin/v1/model-mappings/${id}`, { method: "PATCH", body: input }, decodeModelMapping);
+}
+
+export function deleteModelMapping(id: string): Promise<{ deleted: boolean }> {
+  return apiRequest(`/api/admin/v1/model-mappings/${id}`, { method: "DELETE" }, decodeBooleanResult<{ deleted: boolean }>("deleted"));
+}

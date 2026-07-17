@@ -107,7 +107,37 @@ func validModelFilter(value string, allowed ...string) bool {
 }
 
 func (s *Service) ListEnabled(ctx context.Context) ([]modeldomain.Route, error) {
-	return s.models.ListEnabled(ctx)
+	routes, err := s.models.ListEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
+	mappings, err := s.models.ListMappings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(routes)+len(mappings))
+	for _, route := range routes {
+		seen[modeldomain.ExternalPublicID(route.Provider, route.PublicID)] = true
+	}
+	for _, mapping := range mappings {
+		if !mapping.Enabled {
+			continue
+		}
+		if seen[mapping.ExternalID] {
+			continue
+		}
+		resolved, resolveErr := s.resolveMappedRoutes(ctx, mapping.ExternalID)
+		if resolveErr != nil || len(resolved) == 0 {
+			continue
+		}
+		// 用映射对外名暴露给 /v1/models；内部仍按 mapping 优先级选路。
+		synthetic := resolved[0]
+		synthetic.PublicID = mapping.ExternalID
+		synthetic.CreatedAt = mapping.CreatedAt
+		routes = append(routes, synthetic)
+		seen[mapping.ExternalID] = true
+	}
+	return routes, nil
 }
 
 func (s *Service) Get(ctx context.Context, id uint64) (modeldomain.Route, error) {
@@ -116,10 +146,19 @@ func (s *Service) Get(ctx context.Context, id uint64) (modeldomain.Route, error)
 
 // GetByPublicID 每次读取共享主数据库，保证多实例下的路由禁用立即生效。
 func (s *Service) GetByPublicID(ctx context.Context, publicID string) (modeldomain.Route, error) {
-	return s.models.GetByPublicID(ctx, publicID)
+	values, err := s.GetByPublicIDCandidates(ctx, publicID)
+	if err != nil {
+		return modeldomain.Route{}, err
+	}
+	return values[0], nil
 }
 
 func (s *Service) GetByPublicIDCandidates(ctx context.Context, publicID string) ([]modeldomain.Route, error) {
+	if routes, err := s.resolveMappedRoutes(ctx, publicID); err == nil {
+		return routes, nil
+	} else if err != nil && !errors.Is(err, repository.ErrNotFound) {
+		return nil, err
+	}
 	return s.models.GetByPublicIDCandidates(ctx, publicID)
 }
 

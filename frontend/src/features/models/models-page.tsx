@@ -21,6 +21,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { createModel, deleteModel, deleteModels, listModelAccountOptions, listModels, syncModels, updateModel, updateModelsEnabled } from "@/entities/model/model-api";
 import type { ModelRouteDTO } from "@/entities/model/types";
+import { ModelMappingsDialog } from "@/features/models/model-mappings-dialog";
 import { EmptyState, ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
@@ -43,6 +44,7 @@ export function ModelsPage() {
   const [editing, setEditing] = useState<ModelRouteDTO | "new" | null>(null);
   const [deleting, setDeleting] = useState<ModelRouteDTO | null>(null);
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  const [mappingsOpen, setMappingsOpen] = useState(false);
   const [accountSearch, setAccountSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search);
   const schema = z.object({
@@ -232,6 +234,7 @@ export function ModelsPage() {
                   <Button variant="secondary" size="sm" className="text-destructive hover:text-destructive" onClick={() => setBatchDeleteOpen(true)}>{t("common.delete")}</Button>
                 </>
               ) : null}
+              <Button variant="secondary" size="sm" onClick={() => setMappingsOpen(true)}>{t("models.mapping")}</Button>
               <Button variant="secondary" size="sm" disabled={syncMutation.isPending} onClick={() => syncMutation.mutate()}>
                 {syncMutation.isPending ? <Spinner /> : null}
                 {t("models.sync")}
@@ -373,6 +376,8 @@ export function ModelsPage() {
           <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" disabled={batchDeleteMutation.isPending} onClick={() => batchDeleteMutation.mutate()}>{batchDeleteMutation.isPending ? <Spinner /> : null}{t("common.delete")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <ModelMappingsDialog open={mappingsOpen} onOpenChange={setMappingsOpen} />
     </div>
   );
 }

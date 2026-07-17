@@ -171,6 +171,30 @@ type modelRouteAliasModel struct {
 
 func (modelRouteAliasModel) TableName() string { return "model_route_aliases" }
 
+// publicModelMappingModel 保存下游对外模型名到多渠道目标的映射配置。
+type publicModelMappingModel struct {
+	ID             uint64    `gorm:"primaryKey;autoIncrement"`
+	ExternalID     string    `gorm:"size:255;uniqueIndex;not null;check:chk_public_model_mappings_external_id,length(trim(external_id)) BETWEEN 1 AND 255"`
+	Enabled        bool      `gorm:"not null;default:true"`
+	EffortOverride string    `gorm:"size:16;not null;default:''"`
+	CreatedAt      time.Time `gorm:"not null"`
+	UpdatedAt      time.Time `gorm:"not null"`
+}
+
+func (publicModelMappingModel) TableName() string { return "public_model_mappings" }
+
+type publicModelMappingTargetModel struct {
+	ID            uint64                   `gorm:"primaryKey;autoIncrement"`
+	MappingID     uint64                   `gorm:"not null;uniqueIndex:uidx_mapping_provider_upstream;index:idx_mapping_targets_mapping_priority"`
+	Provider      string                   `gorm:"size:32;not null;uniqueIndex:uidx_mapping_provider_upstream;check:chk_mapping_targets_provider,provider IN ('grok_build','grok_web','grok_console')"`
+	UpstreamModel string                   `gorm:"size:255;not null;uniqueIndex:uidx_mapping_provider_upstream;check:chk_mapping_targets_upstream,length(trim(upstream_model)) BETWEEN 1 AND 255"`
+	Priority      int                      `gorm:"not null;index:idx_mapping_targets_mapping_priority;check:chk_mapping_targets_priority,priority >= 1"`
+	Enabled       bool                     `gorm:"not null;default:true"`
+	Mapping       *publicModelMappingModel `gorm:"foreignKey:MappingID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+}
+
+func (publicModelMappingTargetModel) TableName() string { return "public_model_mapping_targets" }
+
 type modelRouteAccountModel struct {
 	ModelRouteID uint64           `gorm:"primaryKey"`
 	AccountID    uint64           `gorm:"primaryKey"`
